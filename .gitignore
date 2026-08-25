@@ -1,0 +1,9 @@
+.DS_Store
+Thumbs.db
+*.log
+*.zip
+*.sha256.txt
+backup-v1.json
+resource-backup-v1.json
+.vs/
+.vscode/

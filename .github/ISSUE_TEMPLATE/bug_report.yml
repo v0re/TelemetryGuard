@@ -1,0 +1,43 @@
+name: 錯誤回報
+description: 回報可重現、非安全性的 TelemetryGuard 問題
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: 安全漏洞請改用 Private Vulnerability Reporting。請勿貼出備份、日誌、MachineFingerprint、電腦名稱或公司資訊。
+  - type: input
+    id: version
+    attributes:
+      label: TelemetryGuard 版本
+      placeholder: 例如 1.1.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本與 Edition
+      placeholder: 例如 Windows 11 Pro 24H2
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 重現步驟
+      description: 請移除所有個資與機器識別資訊。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 預期與實際結果
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隱私確認
+      options:
+        - label: 我沒有附上備份、日誌、MachineFingerprint、電腦名稱、權杖或密鑰。
+          required: true

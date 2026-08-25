@@ -1,0 +1,33 @@
+name: 功能建議
+description: 建議一項符合安全邊界的功能
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 使用需求
+      description: 說明問題，不要只貼一份通用 debloat 清單。
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Windows 功能影響與還原方式
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Microsoft 官方資料
+      description: 提供直接支持此服務、排程或政策用途的官方連結。
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: 安全邊界
+      options:
+        - label: 此功能可以維持預設不勾選、固定白名單、套用前備份與精確還原。
+          required: true

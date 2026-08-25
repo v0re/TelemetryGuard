@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私下回報安全漏洞
+    url: https://github.com/v0re/TelemetryGuard/security/advisories/new
+    about: 請勿公開貼出安全漏洞或含機器識別資訊的檔案。

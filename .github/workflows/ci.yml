@@ -1,0 +1,177 @@
+name: Safe PR validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: PowerShell 5.1 syntax
+    runs-on: windows-2022
+    steps:
+      - name: Check out source without write credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Parse PowerShell without executing it
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @('TelemetryGuard.ps1', 'ci/Capture-GuardSurface.ps1')
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $file),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if (@($errors).Count -gt 0) {
+              $errors | Format-List | Out-String | Write-Error
+            }
+          }
+
+      - name: Enforce encoding and static safety boundaries
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $PWD 'TelemetryGuard.ps1'
+          $bytes = [IO.File]::ReadAllBytes($path)
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+            throw 'TelemetryGuard.ps1 must retain its UTF-8 BOM for Windows PowerShell 5.1.'
+          }
+          $source = [IO.File]::ReadAllText($path)
+          $forbidden = @(
+            'Invoke-Expression', 'System.Net.WebClient', 'Invoke-WebRequest',
+            'Invoke-RestMethod', 'Start-BitsTransfer', 'DownloadString',
+            'New-NetFirewallRule', 'Add-MpPreference', 'Set-MpPreference'
+          )
+          foreach ($term in $forbidden) {
+            if ($source.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              throw "Forbidden network, dynamic-execution, firewall, or Defender API found: $term"
+            }
+          }
+          if ($source -notmatch "ValidateSet\('Gui', 'Status', 'Preview', 'Disable', 'Restore'\)") {
+            throw 'The explicit mode allowlist changed; maintainer review is required.'
+          }
+          $launcher = [IO.File]::ReadAllText((Join-Path $PWD 'Start-TelemetryGuard.cmd'))
+          $activeLauncherLines = @($launcher -split '\r?\n' | Where-Object {
+              -not [string]::IsNullOrWhiteSpace($_) -and
+              $_.Trim() -notmatch '^(?i:rem(?:\s|$)|::)'
+            })
+          if ($activeLauncherLines.Count -ne 2 -or $activeLauncherLines[0].Trim() -cne '@echo off') {
+            throw 'The launcher must contain only @echo off and one canonical start command.'
+          }
+          $canonicalLauncher = '^(?i:start "" "%SystemRoot%\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe" -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0TelemetryGuard\.ps1" -ExpectedSourceHash ([A-F0-9]{64}))$'
+          $launcherMatch = [regex]::Match($activeLauncherLines[1].Trim(), $canonicalLauncher)
+          if (-not $launcherMatch.Success) {
+            throw 'The active launcher command is not the reviewed canonical command.'
+          }
+          $hasher = [Security.Cryptography.SHA256]::Create()
+          try {
+            $actualHash = (($hasher.ComputeHash($bytes) |
+              ForEach-Object { $_.ToString('X2') }) -join '')
+          }
+          finally {
+            $hasher.Dispose()
+          }
+          if ($launcherMatch.Groups[1].Value.ToUpperInvariant() -cne $actualHash) {
+            throw 'The launcher SHA-256 does not match TelemetryGuard.ps1.'
+          }
+          $mainTokens = $null
+          $mainErrors = $null
+          $mainAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$mainTokens,
+            [ref]$mainErrors
+          )
+          $elevationFunctions = @($mainAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Start-ElevatedCopy'
+              }, $true))
+          if ($elevationFunctions.Count -ne 1) {
+            throw 'Exactly one Start-ElevatedCopy function is required.'
+          }
+          $elevationSource = $elevationFunctions[0].Extent.Text
+          if ([regex]::Matches($source, '(?i)-Verb\s+RunAs').Count -ne 1 -or
+            $elevationSource -notmatch '(?i)-Verb\s+RunAs' -or
+            $elevationSource -notmatch "'-EncodedCommand'\s*,\s*\`$encodedBootstrap" -or
+            $elevationSource -match "'-File'") {
+            throw 'Elevation must use the single reviewed EncodedCommand path and must never use -File.'
+          }
+          $bootstrapPattern = '(?s)\$bootstrap = @''\r?\n(?<body>.*?)\r?\n''@\r?\n\s*\$bootstrap = \$bootstrap\.Replace'
+          $bootstrapMatches = [regex]::Matches($elevationSource, $bootstrapPattern)
+          if ($bootstrapMatches.Count -ne 1) {
+            throw 'Exactly one elevated integrity bootstrap must exist inside Start-ElevatedCopy.'
+          }
+          $bootstrap = $bootstrapMatches[0].Groups['body'].Value.
+            Replace('__EXPECTED_HASH__', $actualHash).
+            Replace('__SOURCE_PATH_BASE64__', [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($path)))
+          $bootstrapTokens = $null
+          $bootstrapErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseInput(
+            $bootstrap,
+            [ref]$bootstrapTokens,
+            [ref]$bootstrapErrors
+          )
+          if (@($bootstrapErrors).Count -gt 0) {
+            $bootstrapErrors | Format-List | Out-String | Write-Error
+          }
+          $encodedLength = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap)).Length
+          if ($encodedLength -gt 24000) {
+            throw 'The elevated integrity bootstrap exceeds the safe command-line budget.'
+          }
+          if ($bootstrap -notmatch '&\s+\$stagedScript\s+-Mode\s+Gui\s+-NoElevation\s+-ExpectedSourceHash\s+\$expectedHash') {
+            throw 'The verified protected staging script is not the bootstrap execution target.'
+          }
+
+  readonly-smoke:
+    name: Trusted read-only smoke test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: syntax
+    runs-on: windows-2022
+    steps:
+      - name: Check out trusted main without write credentials
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Capture allowed system surface before tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\ci\Capture-GuardSurface.ps1 | Set-Content -LiteralPath before.json -Encoding UTF8
+
+      - name: Run Preview and Status only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\TelemetryGuard.ps1 -Mode Preview -NoElevation | Out-File preview.txt -Encoding UTF8
+          & .\TelemetryGuard.ps1 -Mode Status -NoElevation | Out-File status.json -Encoding UTF8
+          if ([string]::IsNullOrWhiteSpace((Get-Content -LiteralPath preview.txt -Raw))) {
+            throw 'Preview returned no output.'
+          }
+          $null = Get-Content -LiteralPath status.json -Raw | ConvertFrom-Json
+
+      - name: Prove the read-only modes changed nothing
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\ci\Capture-GuardSurface.ps1 | Set-Content -LiteralPath after.json -Encoding UTF8
+          $before = Get-Content -LiteralPath before.json -Raw
+          $after = Get-Content -LiteralPath after.json -Raw
+          if ($before -cne $after) {
+            Write-Host 'Before:'
+            Write-Host $before
+            Write-Host 'After:'
+            Write-Host $after
+            throw 'Preview or Status changed a protected system surface.'
+          }
