@@ -9,7 +9,8 @@ $ErrorActionPreference = 'Stop'
 $serviceNames = @(
     'DiagTrack', 'WSearch', 'MixedRealityLinkSvc', 'Spooler', 'CDPSvc', 'PhoneSvc',
     'lfsvc', 'MapsBroker', 'XblAuthManager', 'XblGameSave', 'XboxGipSvc',
-    'XboxNetApiSvc', 'WerSvc', 'PcaSvc'
+    'XboxNetApiSvc', 'WerSvc', 'PcaSvc', 'InstallService', 'WMPNetworkSvc',
+    'icssvc', 'WebClient'
 )
 
 $taskIdentities = @(

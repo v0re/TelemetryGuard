@@ -8,7 +8,7 @@ These rules apply to every human or automated coding agent in this repository.
 - Never add user-supplied, wildcard, regex-derived, or remotely supplied service names, scheduled tasks, registry paths, files, or commands.
 - Optional optimizations must remain unchecked by default and use an explicit immutable allowlist.
 - Every new mutable target needs an original-state backup, strict validation, fail-closed behavior, and an exact restore path.
-- Never target Defender, Windows Update, SysMain, BITS, Delivery Optimization, networking, audio, Bluetooth, power, authentication, or storage core services.
+- Never target Defender, Windows Update, SysMain, BITS, Delivery Optimization, or core networking, audio, Bluetooth, power, authentication, or storage services. A non-core feature that uses the network can only be a new, unchecked profile with an exact name, documented impact, official Microsoft source, dependency check, backup, and exact restore.
 - Never add telemetry upload, network requests, remote downloads, self-update, `Invoke-Expression`, or dynamic code execution.
 - Never weaken machine binding, ACL validation, backup schema validation, allowlist validation, operation locking, or post-change verification.
 - Do not edit workflow files in an unrelated feature or bug-fix PR.
