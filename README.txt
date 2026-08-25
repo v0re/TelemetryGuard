@@ -1,6 +1,6 @@
 ﻿Windows 遙測與資源最佳化 TelemetryGuard
 =======================================
-版本 1.1.1 新增可勾選的資源最佳化候選、即時宿主記憶體顯示、獨立還原備份及 UAC 啟動完整性防護。
+版本 1.2.0 新增四個背景服務候選、可調整的高記憶體門檻、共用宿主辨識及更安全的相依服務檢查。
 
 使用方式
 --------
@@ -12,7 +12,7 @@
 4. 切換到「可選資源最佳化」，只勾選確定不用的功能。
 5. 按「關閉遙測＋已勾選項目」。
 
-「勾選目前 ≥ 50 MB」只會勾選固定白名單中、當下相關宿主工作集達 50 MB 的候選；仍需由你確認影響後再套用。
+高記憶體門檻可在 10–2048 MB 間調整。「勾選目前 ≥」只會勾選固定白名單中、當下相關宿主達門檻且能歸因到單一服務的候選；共用宿主只顯示總值，不會自動勾選。仍需由你確認影響後再套用。
 
 程式會做什麼
 ------------
@@ -36,6 +36,13 @@
 - 若 Windows 大型更新已移除舊服務或排程，還原時會安全略過且不自行重建；更新後新出現、未在備份中的元件也不會被舊備份變更。
 - 套用時若目標排程正在執行，程式會將它停止；還原會恢復 Enabled 設定，但不會重新啟動先前已被中止的那一次工作。
 
+遙測處理範圍
+------------
+- 主要範圍是 DiagTrack、官方診斷資料／CEIP 政策，以及固定的 Compatibility Appraiser／CEIP 排程。
+- Windows Error Reporting、意見回饋與永續性遙測只有在主動勾選對應選項時才會處理。
+- Edge、Office、Microsoft Store App、其他第三方程式及每使用者動態服務的遙測不在自動處理範圍。
+- Windows 版本可能另有其他元件；本工具不宣稱完全關閉 Windows 或 Microsoft 所有遙測與連線。
+
 可勾選的資源最佳化
 ------------------
 下列項目全部預設不勾選。程式只會操作固定名稱，不能輸入自訂服務或萬用字元。
@@ -48,8 +55,12 @@
 - Xbox 與 Game Pass：影響 Xbox 登入、雲端存檔、多人連線與部分控制器配件。
 - 額外遙測、錯誤回報與意見回饋：停用額外遙測／回饋排程及 Windows Error Reporting 服務，會降低故障診斷資訊。
 - 程式相容性小幫手：影響舊程式相容性偵測與建議修正。
+- Microsoft Store 應用程式安裝：停用 InstallService；Store 無法安裝或更新 App，但 Windows Update 不受此項控制。
+- Windows Media Player 媒體庫分享：停用 WMPNetworkSvc；無法再經 UPnP 分享媒體庫給電視或其他網路裝置。
+- Windows 行動熱點：停用 icssvc；已透過這台電腦上網的裝置會中斷連線。
+- WebDAV 網路檔案用戶端：停用 WebClient；檔案總管與程式無法使用 WebDAV／部分 SharePoint 對應資料夾。
 
-顯示的 MB 是候選服務所在宿主行程的當下 Working Set。服務可能共用行程，數值不等於保證能釋放的記憶體。排程在 Ready 狀態不會常駐占用該數字，主要造成間歇性的 CPU、磁碟與記憶體尖峰。
+顯示的 MB 是候選服務所在宿主行程的當下 Working Set。共用宿主的數值是整個行程總值，無法歸因到單一服務；程式不會用門檻按鈕自動勾選這類項目。數值不等於保證能釋放的記憶體。排程在 Ready 狀態不會常駐占用該數字，主要造成間歇性的 CPU、磁碟與記憶體尖峰。
 
 建立資源備份後，選項會鎖定。若要改選另一組，先按「還原原始設定」，再重新勾選；這可避免停用沒有原始狀態可供還原的新項目。
 
@@ -73,6 +84,7 @@ Windows Error Reporting 只有在你主動勾選「額外遙測、錯誤回報�
 - 關閉診斷資料可能降低 Microsoft 分析更新失敗、驅動程式相容性及系統故障的能力。
 - 停用 Compatibility Appraiser 可能讓大型功能更新的相容性／就緒資訊不完整；進行就地升級前可先還原。
 - 大型 Windows 版本更新可能新增、移除或重新啟用排程。若工具提示基準已過期，先按「還原原始設定」封存舊基準，再重新套用；工具不會猜測新元件的舊狀態。
+- 1.2.0 可讀取並還原 1.1.1 的既有備份；若要降回舊版，先用 1.2.0 還原，因為 1.1.1 不認得新 profile。
 - 公司或學校管理的裝置，請先取得 IT 管理員同意。
 - 「高記憶體」不等於「不必要」；請依是否使用搜尋、列印、Xbox、定位等功能自行決定。
 - 本工具不宣稱阻止 Windows 或 Microsoft 產品的所有網路連線。
@@ -112,7 +124,12 @@ Windows Error Reporting 只有在你主動勾選「額外遙測、錯誤回報�
   https://learn.microsoft.com/troubleshoot/windows-client/setup-upgrade-and-drivers/use-windows-setup-compatibility-scan-logs-to-identify-blocking-issues
 - Microsoft Learn：Windows Search 效能問題與停用索引的影響
   https://learn.microsoft.com/troubleshoot/windows-client/shell-experience/windows-search-performance-issues
-- Microsoft Learn：Windows 服務最佳化指引
+- Microsoft Learn：Windows IoT Enterprise 固定用途裝置的服務最佳化指引
   https://learn.microsoft.com/windows/iot/iot-enterprise/optimize/services
-
-版本：1.1.1
+- Microsoft Learn：VDI 服務最佳化與 Microsoft Store Install Service 影響
+  https://learn.microsoft.com/windows-server/remote/remote-desktop-services/remote-desktop-services-vdi-optimize-configuration
+- Microsoft Learn：Service Host 分組與共用行程
+  https://learn.microsoft.com/windows/application-management/svchost-service-refactoring
+- Microsoft Learn：WebClient 已淘汰且預設不啟動
+  https://learn.microsoft.com/windows/whats-new/deprecated-features
+版本：1.2.0

@@ -7,22 +7,22 @@
 
 ## 下載與快速使用
 
-1. 從 [Latest Release](https://github.com/v0re/TelemetryGuard/releases/latest) 下載 `TelemetryGuard-1.1.1.zip` 與 SHA-256 檔。
+1. 從 [Latest Release](https://github.com/v0re/TelemetryGuard/releases/latest) 下載 `TelemetryGuard-1.2.0.zip` 與 SHA-256 檔。
 2. 解壓縮整個資料夾。
 3. 雙擊 `Start-TelemetryGuard.cmd`，在 UAC 提示中確認允許。
 4. 先查看狀態；需要時才切換到「可選資源最佳化」並勾選確定不用的功能。
 5. 按「關閉遙測＋已勾選項目」。若要復原，按「還原原始設定」。
 
-1.1.1 正式 ZIP 的 SHA-256：
+1.2.0 正式 ZIP 的 SHA-256：
 
 ```text
-20D229062D9991106157A49BB8123DE7179F64FF34EF419CA806850E6FABF32A
+44757EC30B6E7AF19789A4114959C4F70DC3D7A89BBEDC978BE351008E1AF487
 ```
 
 在 PowerShell 驗證下載：
 
 ```powershell
-Get-FileHash .\TelemetryGuard-1.1.1.zip -Algorithm SHA256
+Get-FileHash .\TelemetryGuard-1.2.0.zip -Algorithm SHA256
 ```
 
 ## 主要功能
@@ -33,6 +33,17 @@ Get-FileHash .\TelemetryGuard-1.1.1.zip -Algorithm SHA256
 - 套用前在 `%ProgramData%\TelemetryGuard` 建立 ACL 保護的原始狀態備份。
 - 驗證機器、資料結構、白名單與備份內容後才允許還原。
 - 提供圖形介面、唯讀狀態、變更預覽及一鍵還原。
+
+## 遙測處理範圍
+
+TelemetryGuard 並不是 Microsoft 所有產品的「全域斷線器」。目前會處理的 Windows 範圍是：
+
+- `DiagTrack`（Connected User Experiences and Telemetry）服務。
+- Windows 版本支援的最低診斷資料、CEIP、診斷記錄與傾印收集政策。
+- 固定白名單內的 Compatibility Appraiser 與 CEIP 排程。
+- 只有主動勾選時才處理 Windows Error Reporting、意見回饋與永續性遙測候選。
+
+不在自動處理範圍的包括 Edge、Office、Microsoft Store App 或其他第三方程式本身的遙測、每使用者動態服務，以及 Windows 更新與安全功能所需的連線。不同 Windows 版本也可能新增其他元件，因此本專案不宣稱完全關閉所有遙測。
 
 ## 可選資源最佳化
 
@@ -48,8 +59,12 @@ Get-FileHash .\TelemetryGuard-1.1.1.zip -Algorithm SHA256
 | Xbox 與 Game Pass | Xbox 登入、雲端存檔、多人連線與部分配件 |
 | 額外遙測、錯誤回報與意見回饋 | Windows Error Reporting 與部分故障診斷能力 |
 | 程式相容性小幫手 | 舊程式相容性偵測與修正建議 |
+| Microsoft Store 應用程式安裝 | Microsoft Store 將無法安裝或更新 App；Windows Update 不受此項控制 |
+| Windows Media Player 媒體庫分享 | 無法再透過 UPnP 分享媒體庫給電視、播放器或其他網路裝置 |
+| Windows 行動熱點 | 無法分享行動數據連線；已連線裝置會中斷 |
+| WebDAV 網路檔案用戶端 | 檔案總管與程式無法使用 WebDAV／部分 SharePoint 對應資料夾 |
 
-「勾選目前 ≥ 50 MB」只會勾選固定候選中、當下相關宿主工作集達門檻的項目。服務可能共用宿主行程，因此顯示值不等於保證可釋放的記憶體；Ready 排程也不會持續占用該數字。
+高記憶體門檻可在 10–2048 MB 間調整。按下勾選按鈕只會勾選固定候選中、當下相關宿主工作集達門檻且能歸因到單一服務的項目；共用宿主只顯示整個行程總值，不會被自動勾選。顯示值不等於保證可釋放的記憶體，Ready 排程也不會持續占用該數字。
 
 ## 安全邊界
 
@@ -73,6 +88,7 @@ Get-FileHash .\TelemetryGuard-1.1.1.zip -Algorithm SHA256
 - Windows Pro 的官方最低等級是「必要診斷資料」（政策值 1）；Enterprise、Education 與 Server 才支援官方「診斷資料關閉」等級。
 - Home 版不在相關官方管理政策支援清單內，程式會略過不適用的政策寫入。
 - 關閉相容性遙測可能讓大型功能更新的就緒資訊不完整；進行就地升級前可先還原。
+- 1.2.0 可讀取並還原 1.1.1 的既有備份；若要降回舊版，必須先用 1.2.0 還原，因為 1.1.1 不認得新 profile。
 - 本工具不宣稱阻止 Windows 或 Microsoft 產品的所有網路連線或資料收集。
 - 公司或學校管理的裝置，請先取得 IT 管理員同意。
 
@@ -113,7 +129,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\TelemetryGuard.ps1 -Mo
 - [Microsoft Learn：Turn off Windows Customer Experience Improvement Program](https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-icm#ceipenable)
 - [Microsoft Learn：Windows Setup compatibility scan logs](https://learn.microsoft.com/troubleshoot/windows-client/setup-upgrade-and-drivers/use-windows-setup-compatibility-scan-logs-to-identify-blocking-issues)
 - [Microsoft Learn：Windows Search performance](https://learn.microsoft.com/troubleshoot/windows-client/shell-experience/windows-search-performance-issues)
-- [Microsoft Learn：Windows service optimization guidance](https://learn.microsoft.com/windows/iot/iot-enterprise/optimize/services)
+- [Microsoft Learn：Windows IoT Enterprise 固定用途裝置的服務最佳化指引](https://learn.microsoft.com/windows/iot/iot-enterprise/optimize/services)
+- [Microsoft Learn：VDI 服務最佳化與 Microsoft Store Install Service 影響](https://learn.microsoft.com/windows-server/remote/remote-desktop-services/remote-desktop-services-vdi-optimize-configuration)
+- [Microsoft Learn：Service Host 分組與共用行程](https://learn.microsoft.com/windows/application-management/svchost-service-refactoring)
+- [Microsoft Learn：WebClient 已淘汰且預設不啟動](https://learn.microsoft.com/windows/whats-new/deprecated-features)
 
 TelemetryGuard 是獨立的開放原始碼專案，與 Microsoft、Meta／Threads 或原影片作者沒有隸屬或背書關係。
 

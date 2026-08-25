@@ -16,7 +16,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $script:AppName = 'TelemetryGuard'
-$script:AppVersion = '1.1.1'
+$script:AppVersion = '1.2.0'
 $script:CommonDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $script:StateRoot = Join-Path $script:CommonDataRoot $script:AppName
 $script:BackupPath = Join-Path $script:StateRoot 'backup-v1.json'
@@ -45,7 +45,11 @@ $script:AllowedOptionalProfileIds = @(
     'location-maps',
     'xbox',
     'error-feedback',
-    'compatibility-assistant'
+    'compatibility-assistant',
+    'store-install',
+    'media-sharing',
+    'mobile-hotspot',
+    'webdav-client'
 )
 $script:AllowedOptionalServiceNames = @(
     'WSearch',
@@ -60,7 +64,11 @@ $script:AllowedOptionalServiceNames = @(
     'XboxGipSvc',
     'XboxNetApiSvc',
     'WerSvc',
-    'PcaSvc'
+    'PcaSvc',
+    'InstallService',
+    'WMPNetworkSvc',
+    'icssvc',
+    'WebClient'
 )
 $script:AllowedOptionalTaskIdentities = @(
     '\Microsoft\Windows\Shell\|IndexerAutomaticMaintenance',
@@ -646,6 +654,34 @@ function Get-OptionalOptimizationProfiles {
             Tasks = @(
                 [pscustomobject]@{ TaskPath = '\Microsoft\Windows\Application Experience\'; TaskName = 'MareBackup' }
             )
+        },
+        [pscustomobject][ordered]@{
+            Id = 'store-install'
+            Title = 'Microsoft Store 應用程式安裝'
+            Impact = '會阻止 Microsoft Store 安裝或更新應用程式；不會停用 Windows Update。'
+            Services = @('InstallService')
+            Tasks = @()
+        },
+        [pscustomobject][ordered]@{
+            Id = 'media-sharing'
+            Title = 'Windows Media Player 媒體庫分享'
+            Impact = '會停止透過 UPnP 將媒體庫分享給電視、播放器或其他網路裝置。'
+            Services = @('WMPNetworkSvc')
+            Tasks = @()
+        },
+        [pscustomobject][ordered]@{
+            Id = 'mobile-hotspot'
+            Title = 'Windows 行動熱點'
+            Impact = '會關閉行動熱點；目前透過這台電腦上網的裝置會中斷連線。'
+            Services = @('icssvc')
+            Tasks = @()
+        },
+        [pscustomobject][ordered]@{
+            Id = 'webdav-client'
+            Title = 'WebDAV 網路檔案用戶端'
+            Impact = '檔案總管與程式將無法使用 WebDAV／部分 SharePoint 對應資料夾。'
+            Services = @('WebClient')
+            Tasks = @()
         }
     )
 }
@@ -1180,13 +1216,22 @@ function Assert-OptionalBackupObject {
     }
 
     $expectedServices = @{}
+    $expectedServiceNames = @{}
+    $expectedServiceOrder = New-Object System.Collections.Generic.List[string]
     foreach ($profile in @(Get-SelectedOptionalProfiles -ProfileIds $resolved)) {
         foreach ($serviceName in @($profile.Services)) {
             $identity = ('{0}|{1}' -f $profile.Id, $serviceName).ToLowerInvariant()
+            $serviceIdentity = ([string]$serviceName).ToLowerInvariant()
+            if ($expectedServiceNames.ContainsKey($serviceIdentity)) {
+                throw '內建資源最佳化目錄將同一服務對應到多個選項，已停止處理。'
+            }
             $expectedServices[$identity] = $true
+            $expectedServiceNames[$serviceIdentity] = $true
+            $expectedServiceOrder.Add($identity)
         }
     }
     $seenServices = @{}
+    $seenServiceOrder = New-Object System.Collections.Generic.List[string]
     foreach ($snapshot in @($Backup.Services)) {
         foreach ($propertyName in @('ProfileId', 'Name', 'Existed')) {
             if ($snapshot.PSObject.Properties.Name -notcontains $propertyName) {
@@ -1226,11 +1271,10 @@ function Assert-OptionalBackupObject {
             }
         }
         $seenServices[$identity] = $true
+        $seenServiceOrder.Add($identity)
     }
-    $seenServiceIds = @(($seenServices.Keys | Sort-Object))
-    $expectedServiceIds = @(($expectedServices.Keys | Sort-Object))
-    if (($seenServiceIds -join "`n") -cne ($expectedServiceIds -join "`n")) {
-        throw '資源備份未完整涵蓋選取的服務。'
+    if ((@($seenServiceOrder) -join "`n") -cne (@($expectedServiceOrder) -join "`n")) {
+        throw '資源備份未依固定目錄順序完整涵蓋選取的服務。'
     }
 
     $expectedTasks = @{}
@@ -1308,11 +1352,11 @@ function Read-OptionalBackupObject {
 function Get-OrCreateOptionalBackup {
     param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ProfileIds)
 
-    Ensure-StateRoot
     if (Test-Path -LiteralPath $script:OptionalBackupPath) {
         return (Read-OptionalBackupObject)
     }
     $backup = New-OptionalBackupObject -ProfileIds $ProfileIds
+    Assert-OptionalServicesCanStop -Snapshots $backup.Services
     Save-OptionalBackupObject -Backup $backup
     Write-GuardLog '已建立不可覆寫的資源最佳化原始設定備份。'
     return $backup
@@ -1491,7 +1535,11 @@ function Invoke-DisableTelemetry {
 function Disable-OptionalServices {
     param([Parameter(Mandatory = $true)][AllowEmptyCollection()]$Snapshots)
 
-    foreach ($snapshot in @($Snapshots)) {
+    # Stop dependents before their dependencies. The profile catalog keeps
+    # dependency-first order so restore can run in the natural reverse direction.
+    $snapshotsToApply = @($Snapshots)
+    [Array]::Reverse($snapshotsToApply)
+    foreach ($snapshot in $snapshotsToApply) {
         if (-not [bool]$snapshot.Existed) {
             Write-GuardLog ('建立資源備份時沒有服務 {0}；略過且不修改後來新增的服務。' -f $snapshot.Name)
             continue
@@ -1509,6 +1557,49 @@ function Disable-OptionalServices {
             Stop-Service -Name ([string]$snapshot.Name) -ErrorAction Stop
         }
         Write-GuardLog ('可選服務 {0} 已停止並設為停用。' -f $snapshot.Name)
+    }
+}
+
+function Assert-OptionalServicesCanStop {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()]$Snapshots)
+
+    $snapshotsToCheck = @($Snapshots)
+    $selectedNames = @($snapshotsToCheck | ForEach-Object { [string]$_.Name })
+    $selectedOrder = @{}
+    for ($index = 0; $index -lt $selectedNames.Count; $index++) {
+        $identity = ([string]$selectedNames[$index]).ToLowerInvariant()
+        if ($selectedOrder.ContainsKey($identity)) {
+            throw '可選服務快照含有重複目標，已停止處理。'
+        }
+        $selectedOrder[$identity] = $index
+    }
+
+    for ($index = 0; $index -lt $snapshotsToCheck.Count; $index++) {
+        $snapshot = $snapshotsToCheck[$index]
+        if (-not [bool]$snapshot.Existed) {
+            continue
+        }
+        $service = Get-Service -Name ([string]$snapshot.Name) -ErrorAction Stop
+        foreach ($dependent in @($service.DependentServices)) {
+            $dependentIdentity = ([string]$dependent.Name).ToLowerInvariant()
+            if ($selectedOrder.ContainsKey($dependentIdentity) -and
+                [int]$selectedOrder[$dependentIdentity] -le $index) {
+                throw ('內建服務順序無法安全處理 {0} 對 {1} 的相依關係，已停止處理。' -f
+                    $snapshot.Name, $dependent.Name)
+            }
+        }
+        $blockingDependents = @(
+            $service.DependentServices |
+                Where-Object {
+                    $_.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped -and
+                    $selectedNames -notcontains [string]$_.Name
+                } |
+                ForEach-Object { [string]$_.Name }
+        )
+        if ($blockingDependents.Count -gt 0) {
+            throw ('服務 {0} 仍有未勾選且正在使用中的相依服務：{1}。為避免連帶中斷，沒有套用任何可選項目。' -f
+                $snapshot.Name, ($blockingDependents -join ', '))
+        }
     }
 }
 
@@ -1561,6 +1652,7 @@ function Invoke-DisableOptionalProfiles {
     Invoke-WithOperationLock {
         $backup = Get-OrCreateOptionalBackup -ProfileIds $resolved
         Assert-OptionalBackupCoversSelection -Backup $backup -ProfileIds $resolved
+        Assert-OptionalServicesCanStop -Snapshots $backup.Services
         Write-GuardLog ('開始套用資源最佳化選項：{0}。' -f ($resolved -join ', '))
 
         $tasksToDisable = @($backup.Tasks | Where-Object { [bool]$_.Existed })
@@ -2013,6 +2105,45 @@ function Get-OptionalProfileStatuses {
     foreach ($service in @(Get-CimInstance Win32_Service -ErrorAction Stop)) {
         $serviceMap[[string]$service.Name] = $service
     }
+    $processServiceMap = @{}
+    foreach ($service in @($serviceMap.Values)) {
+        if ([uint32]$service.ProcessId -eq 0) {
+            continue
+        }
+        $processKey = ([uint32]$service.ProcessId).ToString()
+        if (-not $processServiceMap.ContainsKey($processKey)) {
+            $processServiceMap[$processKey] = New-Object System.Collections.Generic.List[string]
+        }
+        $processServiceMap[$processKey].Add([string]$service.Name)
+    }
+    $processStatusMap = @{}
+    $candidateProcessKeys = @(
+        foreach ($serviceName in $script:AllowedOptionalServiceNames) {
+            if ($serviceMap.ContainsKey([string]$serviceName)) {
+                $candidateService = $serviceMap[[string]$serviceName]
+                if ([uint32]$candidateService.ProcessId -gt 0) {
+                    ([uint32]$candidateService.ProcessId).ToString()
+                }
+            }
+        }
+    ) | Sort-Object -Unique
+    foreach ($processKey in $candidateProcessKeys) {
+        try {
+            $process = Get-Process -Id ([int]$processKey) -ErrorAction Stop
+            $processStatusMap[$processKey] = [pscustomobject][ordered]@{
+                Available = $true
+                Name = [string]$process.ProcessName
+                WorkingSetMB = [Math]::Round($process.WorkingSet64 / 1MB, 1)
+            }
+        }
+        catch {
+            $processStatusMap[$processKey] = [pscustomobject][ordered]@{
+                Available = $false
+                Name = ''
+                WorkingSetMB = 0.0
+            }
+        }
+    }
     $taskMap = @{}
     foreach ($task in @(Get-ScheduledTask -ErrorAction Stop)) {
         $identity = ('{0}|{1}' -f $task.TaskPath, $task.TaskName).ToLowerInvariant()
@@ -2025,15 +2156,29 @@ function Get-OptionalProfileStatuses {
                 foreach ($serviceName in @($profile.Services)) {
                     $service = if ($serviceMap.ContainsKey([string]$serviceName)) { $serviceMap[[string]$serviceName] } else { $null }
                     $workingSetMb = 0.0
+                    $measurementAvailable = $true
+                    $hostProcessName = ''
+                    if ($null -ne $service -and [string]$service.State -eq 'Running' -and
+                        [uint32]$service.ProcessId -eq 0) {
+                        $measurementAvailable = $false
+                    }
                     if ($null -ne $service -and [uint32]$service.ProcessId -gt 0) {
-                        try {
-                            $workingSetMb = [Math]::Round(
-                                (Get-Process -Id ([int]$service.ProcessId) -ErrorAction Stop).WorkingSet64 / 1MB,
-                                1
-                            )
+                        $processKey = ([uint32]$service.ProcessId).ToString()
+                        if ($processStatusMap.ContainsKey($processKey)) {
+                            $processStatus = $processStatusMap[$processKey]
+                            $measurementAvailable = [bool]$processStatus.Available
+                            $hostProcessName = [string]$processStatus.Name
+                            $workingSetMb = [double]$processStatus.WorkingSetMB
                         }
-                        catch {
-                            $workingSetMb = 0.0
+                        else {
+                            $measurementAvailable = $false
+                        }
+                    }
+                    $hostServiceNames = @()
+                    if ($null -ne $service -and [uint32]$service.ProcessId -gt 0) {
+                        $processKey = ([uint32]$service.ProcessId).ToString()
+                        if ($processServiceMap.ContainsKey($processKey)) {
+                            $hostServiceNames = @($processServiceMap[$processKey] | Sort-Object)
                         }
                     }
                     [pscustomobject][ordered]@{
@@ -2044,6 +2189,10 @@ function Get-OptionalProfileStatuses {
                         StartMode = if ($null -ne $service) { [string]$service.StartMode } else { '' }
                         ProcessId = if ($null -ne $service) { [uint32]$service.ProcessId } else { [uint32]0 }
                         WorkingSetMB = [double]$workingSetMb
+                        MeasurementAvailable = [bool]$measurementAvailable
+                        HostProcessName = $hostProcessName
+                        SharedHost = [bool]($hostServiceNames.Count -gt 1)
+                        HostServices = @($hostServiceNames)
                         Protected = [bool](($null -eq $service) -or
                             ([string]$service.State -eq 'Stopped' -and [string]$service.StartMode -eq 'Disabled'))
                     }
@@ -2090,6 +2239,8 @@ function Get-OptionalProfileStatuses {
                 Available = [bool]$available
                 Protected = [bool]$protected
                 WorkingSetMB = [Math]::Round($workingSetTotal, 1)
+                MeasurementAvailable = [bool](@($services | Where-Object { -not $_.MeasurementAvailable }).Count -eq 0)
+                SharedHost = [bool](@($services | Where-Object { $_.SharedHost }).Count -gt 0)
                 Services = $services
                 Tasks = $tasks
             }
@@ -2112,28 +2263,28 @@ function Get-GuardStatus {
     $policies = @(Get-CurrentPolicyValues)
     $backupAvailable = $false
     $backupError = $null
-    if (Test-Path -LiteralPath $script:BackupPath) {
-        try {
+    try {
+        if (Test-Path -LiteralPath $script:BackupPath -ErrorAction Stop) {
             $null = Read-BackupObject
             $backupAvailable = $true
         }
-        catch {
-            $backupError = $_.Exception.Message
-        }
+    }
+    catch {
+        $backupError = $_.Exception.Message
     }
 
     $optionalBackupAvailable = $false
     $optionalBackupError = $null
     $optionalBackupProfiles = @()
-    if (Test-Path -LiteralPath $script:OptionalBackupPath) {
-        try {
+    try {
+        if (Test-Path -LiteralPath $script:OptionalBackupPath -ErrorAction Stop) {
             $optionalBackup = Read-OptionalBackupObject
             $optionalBackupAvailable = $true
             $optionalBackupProfiles = @($optionalBackup.SelectedProfiles | ForEach-Object { [string]$_ })
         }
-        catch {
-            $optionalBackupError = $_.Exception.Message
-        }
+    }
+    catch {
+        $optionalBackupError = $_.Exception.Message
     }
     $optionalProfileStatuses = @(Get-OptionalProfileStatuses)
 
@@ -2236,8 +2387,20 @@ function Format-GuardStatus {
         else {
             '可選'
         }
-        $lines.Add(('  [{0}] {1}（相關宿主目前 {2:N1} MB）' -f
-                $mark, $profile.Title, [double]$profile.WorkingSetMB))
+        $memoryNote = if ([bool]$profile.SharedHost) {
+            '；含共用宿主，只能視為總值'
+        }
+        else {
+            ''
+        }
+        $memoryDisplay = if ([bool]$profile.MeasurementAvailable) {
+            '{0:N1} MB' -f [double]$profile.WorkingSetMB
+        }
+        else {
+            '無法讀取'
+        }
+        $lines.Add(('  [{0}] {1}（相關宿主目前 {2}{3}）' -f
+                $mark, $profile.Title, $memoryDisplay, $memoryNote))
     }
 
     $lines.Add('')
@@ -2262,7 +2425,7 @@ function Format-GuardStatus {
     }
     $lines.Add(('資源最佳化還原備份：{0}' -f $optionalBackupDisplay))
     $lines.Add('')
-    $lines.Add('範圍說明：不變更 Windows Update、Microsoft Defender、網路、音效、hosts 或防火牆。')
+    $lines.Add('範圍說明：不變更 Windows Update、Microsoft Defender、網路連線核心、音效、hosts 或防火牆。')
     $lines.Add('只有勾選「額外遙測、錯誤回報與意見回饋」時，才會停用 Windows Error Reporting 服務。')
     $lines.Add('顯示的 MB 是服務宿主行程當下工作集，不保證全部可釋放；排程主要造成間歇性尖峰。')
     $lines.Add('此工具針對 Windows 診斷遙測，不代表阻止 Edge、Office 或其他 Microsoft 應用程式的所有連線。')
@@ -2336,7 +2499,7 @@ function Show-GuardGui {
         }
 
     $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Windows 遙測與資源最佳化'
+    $form.Text = 'TelemetryGuard ' + $script:AppVersion + ' — Windows 遙測與資源最佳化'
     $form.StartPosition = 'CenterScreen'
     $form.Size = New-Object System.Drawing.Size(920, 780)
     $form.MinimumSize = New-Object System.Drawing.Size(850, 720)
@@ -2359,7 +2522,7 @@ function Show-GuardGui {
     $form.Controls.Add($subtitle)
 
     $notice = New-Object System.Windows.Forms.Label
-    $notice.Text = '不會自動判定所有高記憶體服務；僅操作固定白名單。Defender、Windows Update、網路與音效核心不在清單內。'
+    $notice.Text = '不會自動判定所有高記憶體服務；僅操作固定白名單。Defender、Windows Update、網路連線與音效核心不在清單內。'
     $notice.AutoSize = $false
     $notice.Location = New-Object System.Drawing.Point(27, 106)
     $notice.Size = New-Object System.Drawing.Size(850, 38)
@@ -2390,23 +2553,45 @@ function Show-GuardGui {
     $statusTab.Controls.Add($statusBox)
 
     $optionsHelp = New-Object System.Windows.Forms.Label
-    $optionsHelp.Text = '只勾選確定不用的功能。MB 是相關服務宿主目前工作集，可能是共用行程，也不代表全部都能釋放。'
+    $optionsHelp.Text = '只勾選確定不用的功能。MB 是宿主目前工作集；共用宿主是總值，不會被門檻按鈕自動勾選。'
     $optionsHelp.AutoSize = $false
     $optionsHelp.Location = New-Object System.Drawing.Point(10, 10)
-    $optionsHelp.Size = New-Object System.Drawing.Size(600, 42)
+    $optionsHelp.Size = New-Object System.Drawing.Size(805, 42)
     $optionsHelp.ForeColor = [System.Drawing.Color]::FromArgb(75, 85, 99)
     $optionsTab.Controls.Add($optionsHelp)
 
+    $thresholdLabel = New-Object System.Windows.Forms.Label
+    $thresholdLabel.Text = '高記憶體門檻：'
+    $thresholdLabel.AutoSize = $true
+    $thresholdLabel.Location = New-Object System.Drawing.Point(12, 58)
+    $optionsTab.Controls.Add($thresholdLabel)
+
+    $thresholdSelector = New-Object System.Windows.Forms.NumericUpDown
+    $thresholdSelector.Minimum = 10
+    $thresholdSelector.Maximum = 2048
+    $thresholdSelector.Increment = 10
+    $thresholdSelector.Value = 50
+    $thresholdSelector.Location = New-Object System.Drawing.Point(132, 54)
+    $thresholdSelector.Size = New-Object System.Drawing.Size(82, 30)
+    $thresholdSelector.TextAlign = 'Right'
+    $optionsTab.Controls.Add($thresholdSelector)
+
+    $thresholdUnit = New-Object System.Windows.Forms.Label
+    $thresholdUnit.Text = 'MB'
+    $thresholdUnit.AutoSize = $true
+    $thresholdUnit.Location = New-Object System.Drawing.Point(220, 58)
+    $optionsTab.Controls.Add($thresholdUnit)
+
     $selectHighButton = New-Object System.Windows.Forms.Button
     $selectHighButton.Text = '勾選目前 ≥ 50 MB'
-    $selectHighButton.Location = New-Object System.Drawing.Point(630, 12)
+    $selectHighButton.Location = New-Object System.Drawing.Point(630, 52)
     $selectHighButton.Size = New-Object System.Drawing.Size(180, 32)
     $selectHighButton.Anchor = 'Top,Right'
     $optionsTab.Controls.Add($selectHighButton)
 
     $optionsPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $optionsPanel.Location = New-Object System.Drawing.Point(8, 56)
-    $optionsPanel.Size = New-Object System.Drawing.Size(815, 410)
+    $optionsPanel.Location = New-Object System.Drawing.Point(8, 92)
+    $optionsPanel.Size = New-Object System.Drawing.Size(815, 374)
     $optionsPanel.Anchor = 'Top,Bottom,Left,Right'
     $optionsPanel.AutoScroll = $true
     $optionsPanel.FlowDirection = 'TopDown'
@@ -2479,9 +2664,17 @@ function Show-GuardGui {
                 else {
                     '目前可用'
                 }
-                $checkbox.Text = "{0} — 相關宿主 {1:N1} MB — {2}`r`n影響：{3}" -f
+                $hostNote = if ([bool]$profileStatus.SharedHost) { '（共用宿主總值）' } else { '' }
+                $memoryDisplay = if ([bool]$profileStatus.MeasurementAvailable) {
+                    '{0:N1} MB' -f [double]$profileStatus.WorkingSetMB
+                }
+                else {
+                    '無法讀取'
+                }
+                $checkbox.Text = "{0} — 相關宿主 {1}{2} — {3}`r`n影響：{4}" -f
                     $profileStatus.Title,
-                    [double]$profileStatus.WorkingSetMB,
+                    $memoryDisplay,
+                    $hostNote,
                     $stateText,
                     $profileStatus.Impact
                 if ($status.OptionalBackupAvailable) {
@@ -2501,6 +2694,7 @@ function Show-GuardGui {
                 $applyButton.Enabled = -not $hasBackupError
                 $restoreButton.Enabled = [bool]$status.AnyBackupAvailable
                 $selectHighButton.Enabled = [bool](-not $status.OptionalBackupAvailable -and -not $hasBackupError)
+                $thresholdSelector.Enabled = [bool](-not $status.OptionalBackupAvailable -and -not $hasBackupError)
             }
         }
         catch {
@@ -2509,6 +2703,7 @@ function Show-GuardGui {
             $applyButton.Enabled = $false
             $restoreButton.Enabled = $false
             $selectHighButton.Enabled = $false
+            $thresholdSelector.Enabled = $false
             foreach ($checkbox in @($profileCheckboxes.Values)) {
                 $checkbox.Enabled = $false
             }
@@ -2523,6 +2718,7 @@ function Show-GuardGui {
         $refreshButton.Enabled = -not $Busy
         $closeButton.Enabled = -not $Busy
         $selectHighButton.Enabled = $false
+        $thresholdSelector.Enabled = $false
         foreach ($checkbox in @($profileCheckboxes.Values)) {
             $checkbox.Enabled = $false
         }
@@ -2532,14 +2728,21 @@ function Show-GuardGui {
         }
     }
 
+    $thresholdSelector.Add_ValueChanged({
+            $selectHighButton.Text = '勾選目前 ≥ {0} MB' -f [int]$thresholdSelector.Value
+        })
+
     $selectHighButton.Add_Click({
             if ($uiState.Busy -or $null -eq $uiState.LastStatus -or
                 $uiState.LastStatus.OptionalBackupAvailable) {
                 return
             }
+            $thresholdMb = [double]$thresholdSelector.Value
             foreach ($profileStatus in @($uiState.LastStatus.OptionalProfiles)) {
                 if ($profileStatus.Available -and -not $profileStatus.Protected -and
-                    [double]$profileStatus.WorkingSetMB -ge 50) {
+                    [bool]$profileStatus.MeasurementAvailable -and
+                    -not [bool]$profileStatus.SharedHost -and
+                    [double]$profileStatus.WorkingSetMB -ge $thresholdMb) {
                     $profileCheckboxes[[string]$profileStatus.Id].Checked = $true
                 }
             }
